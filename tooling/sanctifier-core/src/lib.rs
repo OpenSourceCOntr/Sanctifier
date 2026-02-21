@@ -17,6 +17,20 @@ pub struct PanicIssue {
     pub location: String, // e.g. "struct_name:line" or similar context
 }
 
+#[derive(Debug, Serialize, Clone)]
+pub struct UnsafePattern {
+    pub pattern_type: PatternType,
+    pub snippet: String,
+    pub line: usize,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub enum PatternType {
+    Panic,
+    Unwrap,
+    Expect,
+}
+
 pub struct Analyzer {
     pub strict_mode: bool,
     pub ledger_limit: usize,
@@ -29,7 +43,30 @@ impl Analyzer {
             ledger_limit: 64000, // Default 64KB warning threshold
         }
     }
+    pub fn scan_auth_gaps(&self, source: &str) -> Vec<String> {
+        let file = match parse_str::<File>(source) {
+            Ok(f) => f,
+            Err(_) => return vec![],
+        };
 
+        let mut gaps = Vec::new();
+
+        for item in file.items {
+            if let Item::Impl(i) = item {
+                for impl_item in &i.items {
+                    if let syn::ImplItem::Fn(f) = impl_item {
+                        if let syn::Visibility::Public(_) = f.vis {
+                            let mut has_mutation = false;
+                            let mut has_auth = false;
+                            self.check_fn_body(&f.block, &mut has_mutation, &mut has_auth);
+                            if has_mutation && !has_auth {
+                                gaps.push(f.sig.ident.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
         gaps
     }
 
@@ -63,6 +100,15 @@ impl Analyzer {
                 syn::Stmt::Local(local) => {
                     if let Some(init) = &local.init {
                         self.check_expr_panics(&init.expr, fn_name, issues);
+                    }
+                }
+                syn::Stmt::Macro(m) => {
+                    if m.mac.path.is_ident("panic") {
+                        issues.push(PanicIssue {
+                            function_name: fn_name.to_string(),
+                            issue_type: "panic!".to_string(),
+                            location: fn_name.to_string(),
+                        });
                     }
                 }
                 _ => {}
@@ -131,6 +177,11 @@ impl Analyzer {
                         self.check_expr(&init.expr, has_mutation, has_auth);
                     }
                 }
+                syn::Stmt::Macro(m) => {
+                    if m.mac.path.is_ident("require_auth") || m.mac.path.is_ident("require_auth_for_args") {
+                        *has_auth = true;
+                    }
+                }
                 _ => {}
             }
         }
@@ -157,7 +208,7 @@ impl Analyzer {
                 if method_name == "set" || method_name == "update" || method_name == "remove" {
                     // Check if it's acting on storage (heuristic: receiver contains "storage")
                     let receiver_str = quote::quote!(#m.receiver).to_string();
-                    if receiver_str.contains("storage") {
+                    if receiver_str.contains("storage") || receiver_str.contains("persistent") || receiver_str.contains("temporary") || receiver_str.contains("instance") {
                         *has_mutation = true;
                     }
                 }
@@ -257,6 +308,7 @@ impl Analyzer {
         visitor.patterns
     }
 
+
     fn estimate_struct_size(&self, s: &syn::ItemStruct) -> usize {
         let mut total_size = 0;
         match &s.fields {
@@ -295,6 +347,40 @@ impl Analyzer {
             }
             _ => 8,
         }
+    }
+}
+
+struct UnsafeVisitor {
+    patterns: Vec<UnsafePattern>,
+}
+
+impl<'ast> Visit<'ast> for UnsafeVisitor {
+    fn visit_expr_method_call(&mut self, i: &'ast syn::ExprMethodCall) {
+        let method_name = i.method.to_string();
+        if method_name == "unwrap" || method_name == "expect" {
+            let pattern_type = if method_name == "unwrap" {
+                PatternType::Unwrap
+            } else {
+                PatternType::Expect
+            };
+            self.patterns.push(UnsafePattern {
+                pattern_type,
+                snippet: quote::quote!(#i).to_string(),
+                line: 0, // Simplified for now
+            });
+        }
+        visit::visit_expr_method_call(self, i);
+    }
+
+    fn visit_expr_macro(&mut self, i: &'ast syn::ExprMacro) {
+        if i.mac.path.is_ident("panic") {
+            self.patterns.push(UnsafePattern {
+                pattern_type: PatternType::Panic,
+                snippet: quote::quote!(#i).to_string(),
+                line: 0,
+            });
+        }
+        visit::visit_expr_macro(self, i);
     }
 }
 

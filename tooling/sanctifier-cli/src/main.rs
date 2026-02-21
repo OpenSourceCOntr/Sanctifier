@@ -54,17 +54,18 @@ fn main() {
             let mut analyzer = Analyzer::new(false);
             analyzer.ledger_limit = *limit;
             
-            let mut all_warnings = Vec::new();
+            let mut all_size_warnings = Vec::new();
             let mut all_auth_gaps = Vec::new();
             let mut all_panic_issues = Vec::new();
+            let mut all_unsafe_patterns = Vec::new();
 
             println!("Debug: is_dir? {}, extension: {:?}", path.is_dir(), path.extension());
             if path.is_dir() {
-                analyze_directory(path, &analyzer, &mut all_warnings, &mut all_auth_gaps, &mut all_panic_issues);
+                analyze_directory(path, &analyzer, &mut all_size_warnings, &mut all_auth_gaps, &mut all_panic_issues, &mut all_unsafe_patterns);
             } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
                 println!("Debug: Is a .rs file");
                 if let Ok(content) = fs::read_to_string(path) {
-                    all_warnings.extend(analyzer.analyze_ledger_size(&content));
+                    all_size_warnings.extend(analyzer.analyze_ledger_size(&content));
                     
                     let gaps = analyzer.scan_auth_gaps(&content);
                     for g in gaps {
@@ -77,6 +78,8 @@ fn main() {
                         p_mod.location = format!("{}: {}", path.display(), p.location);
                         all_panic_issues.push(p_mod);
                     }
+
+                    all_unsafe_patterns.extend(analyzer.analyze_unsafe_patterns(&content));
                 }
             } else {
                 println!("Debug: Path neither dir nor .rs file");
@@ -200,15 +203,16 @@ fn is_soroban_project(path: &Path) -> bool {
 fn analyze_directory(
     dir: &Path, 
     analyzer: &Analyzer, 
-    all_warnings: &mut Vec<sanctifier_core::SizeWarning>, 
+    all_size_warnings: &mut Vec<sanctifier_core::SizeWarning>, 
     all_auth_gaps: &mut Vec<String>,
-    all_panic_issues: &mut Vec<sanctifier_core::PanicIssue>
+    all_panic_issues: &mut Vec<sanctifier_core::PanicIssue>,
+    all_unsafe_patterns: &mut Vec<sanctifier_core::UnsafePattern>
 ) {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                analyze_directory(&path, analyzer, all_warnings, all_auth_gaps, all_panic_issues);
+                analyze_directory(&path, analyzer, all_size_warnings, all_auth_gaps, all_panic_issues, all_unsafe_patterns);
             } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
                 if let Ok(content) = fs::read_to_string(&path) {
                     let warnings = analyzer.analyze_ledger_size(&content);
