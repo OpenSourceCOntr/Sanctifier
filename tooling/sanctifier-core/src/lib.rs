@@ -1,9 +1,9 @@
 use soroban_sdk::Env;
-use syn::{parse_str, File, Item, Type, Fields, Meta};
+use syn::{parse_str, File, Item, Type, Fields, Meta, ExprMethodCall, Macro};
 use syn::visit::{self, Visit};
 use syn::spanned::Spanned;
 use serde::Serialize;
-use std::collections::HashSet;
+use thiserror::Error;
 
 // ── Existing types ────────────────────────────────────────────────────────────
 
@@ -386,11 +386,7 @@ impl Analyzer {
     }
 }
 
-// ── Runtime guard trait ───────────────────────────────────────────────────────
 
-pub trait SanctifiedGuard {
-    fn check_invariant(&self, env: &Env) -> Result<(), String>;
-}
 
 // ── UnsafeVisitor ─────────────────────────────────────────────────────────────
 
